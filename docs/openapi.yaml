@@ -1,0 +1,193 @@
+openapi: 3.1.0
+
+info:
+  title: Glik Cobranzas — Portal Cliente API
+  version: 0.1.0
+  description: |
+    API de **autogestión de clientes** (`cmd/portal-cliente`), binario separado
+    del staff de cobranzas. Puerto default `8082` (`PORT_PORTAL_CLIENTE`).
+
+    Auth por OTP SMS + JWT propio (`aud=portal-cliente`, clave RSA distinta
+    de staff). Aislamiento estricto por `contrato_id` del claim.
+
+    **Pendiente:** migrar/enlazar esta spec a `glik-api-docs` (GitHub Pages)
+    cuando ese repo esté disponible en el entorno de trabajo. Estilo alineado
+    a `ecosistema-backend/docs/openapi.yaml`.
+
+servers:
+  - url: http://localhost:8082
+    description: Local development (portal-cliente)
+  - url: https://portal-cliente-api.glik.com.ve
+    description: Production (placeholder)
+
+tags:
+  - name: health
+    description: Liveness
+  - name: portal-cliente-auth
+    description: Solicitud y verificación de OTP
+  - name: portal-cliente
+    description: Mi cuenta y reporte de pagos (JWT cliente)
+
+security: []
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      operationId: portalClienteHealth
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  service: { type: string, example: portal-cliente }
+
+  /v1/portal-cliente/auth/solicitar-otp:
+    post:
+      tags: [portal-cliente-auth]
+      summary: Solicitar OTP por SMS
+      operationId: portalClienteSolicitarOTP
+      description: |
+        Busca `ref_clientes` por cédula, genera OTP 6 dígitos (`crypto/rand`),
+        persiste `HMAC-SHA256(pepper, code)` y envía SMS (stub en dev).
+        Rate limit: 3/hora por teléfono, 10/hora por IP; cooldown 60s.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cedula]
+              properties:
+                cedula: { type: string, example: "16530276" }
+      responses:
+        "200":
+          description: Código enviado (destino enmascarado)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse"
+        "404":
+          description: ERR_CLIENTE_NO_ENCONTRADO
+        "422":
+          description: ERR_SIN_TELEFONO
+        "429":
+          description: ERR_RATE_LIMIT o ERR_OTP_COOLDOWN
+
+  /v1/portal-cliente/auth/verificar-otp:
+    post:
+      tags: [portal-cliente-auth]
+      summary: Verificar OTP y emitir JWT
+      operationId: portalClienteVerificarOTP
+      description: |
+        Valida OTP (TTL 5 min, max 5 intentos). Resuelve el único contrato
+        `activo` del cliente y emite JWT con `cliente_id` + `contrato_id`.
+        Si hay más de un activo → ERR_MULTI_CONTRATO.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cedula, codigo]
+              properties:
+                cedula: { type: string }
+                codigo: { type: string, minLength: 6, maxLength: 6 }
+      responses:
+        "200":
+          description: JWT emitido
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse"
+        "400":
+          description: OTP inválido / expirado / max intentos
+        "409":
+          description: Multi-contrato o sin contrato activo
+
+  /v1/portal-cliente/mi-cuenta:
+    get:
+      tags: [portal-cliente]
+      summary: Resumen de cuenta del contrato del JWT
+      operationId: portalClienteMiCuenta
+      security:
+        - PortalClienteBearer: []
+      description: |
+        Usa `cliente_id`/`contrato_id` del claim (no del query). Incluye
+        `EtiquetaEstadoCliente`, `recargo_permanente`, `monto_pago_referencia_usd`
+        (encabezado: puntual o puntual+recargo, sin penalidad de cuota),
+        cuotas pagadas y próxima cuota con `monto_esperado_usd` (cobro completo)
+        y equivalente Bs vía `equivalenteBsDesdeUSDAplicaParam` (tasa del día;
+        TODO CEO Opción A/B).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponse"
+        "401":
+          description: ERR_UNAUTHORIZED
+        "403":
+          description: ERR_FORBIDDEN
+
+  /v1/portal-cliente/pagos/reportar:
+    post:
+      tags: [portal-cliente]
+      summary: Reportar pago (en_proceso)
+      operationId: portalClienteReportarPago
+      security:
+        - PortalClienteBearer: []
+      description: |
+        Reutiliza `RegistrarPagoEnProceso` con `AutoReportadoCliente=true`.
+        El `contrato_id` sale **solo** del JWT (el body no puede fijar otro).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [canal, monto, moneda, fecha_pago]
+              properties:
+                canal:
+                  type: string
+                  enum: [pay_zelle, pay_binance, efectivo_concesionario, pago_movil, deposito_custodio]
+                monto: { type: number, exclusiveMinimum: 0 }
+                moneda: { type: string, minLength: 3, maxLength: 3 }
+                referencia_externa: { type: string, maxLength: 255 }
+                fecha_pago: { type: string, format: date-time }
+      responses:
+        "201":
+          description: Pago en_proceso creado
+        "401":
+          description: ERR_UNAUTHORIZED
+        "403":
+          description: ERR_FORBIDDEN
+        "409":
+          description: ERR_SIN_CUOTA
+
+components:
+  securitySchemes:
+    PortalClienteBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT RS256 aud=portal-cliente (clave PORTAL_CLIENTE_JWT_KEY_PATH)
+
+  schemas:
+    ApiResponse:
+      type: object
+      required: [message, data, error, code]
+      properties:
+        message: { type: string }
+        data: {}
+        error:
+          oneOf:
+            - type: string
+            - type: "null"
+        code: { type: integer }
