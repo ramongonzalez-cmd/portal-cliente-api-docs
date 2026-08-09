@@ -10,9 +10,18 @@ info:
     Auth por OTP SMS + JWT propio (`aud=portal-cliente`, clave RSA distinta
     de staff). Aislamiento estricto por `contrato_id` del claim.
 
+    ## Flujo de autenticación (Swagger UI)
+
+    1. `POST /v1/portal-cliente/auth/solicitar-otp` con tu cédula.
+    2. `POST /v1/portal-cliente/auth/verificar-otp` con el código SMS →
+       copia `data.access_token` de la respuesta.
+    3. Pulsa **Authorize** (candado) arriba, pega el token (sin prefijo
+       `Bearer `) y confirma. Swagger enviará
+       `Authorization: Bearer <token>` en `mi-cuenta` y `pagos/reportar`.
+
     **Pendiente:** migrar/enlazar esta spec a `glik-api-docs` (GitHub Pages)
-    cuando ese repo esté disponible en el entorno de trabajo. Estilo alineado
-    a `ecosistema-backend/docs/openapi.yaml`.
+    cuando ese repo esté disponible. Estilo alineado a
+    `ecosistema-backend/docs/openapi.yaml`.
 
 servers:
   - url: http://localhost:8082
@@ -24,9 +33,9 @@ tags:
   - name: health
     description: Liveness
   - name: portal-cliente-auth
-    description: Solicitud y verificación de OTP
+    description: Solicitud y verificación de OTP (sin JWT)
   - name: portal-cliente
-    description: Mi cuenta y reporte de pagos (JWT cliente)
+    description: Mi cuenta y reporte de pagos (requiere JWT vía Authorize)
 
 security: []
 
@@ -46,6 +55,9 @@ paths:
                 properties:
                   status: { type: string, example: ok }
                   service: { type: string, example: portal-cliente }
+              example:
+                status: ok
+                service: portal-cliente
 
   /v1/portal-cliente/auth/solicitar-otp:
     post:
@@ -56,28 +68,63 @@ paths:
         Busca `ref_clientes` por cédula, genera OTP 6 dígitos (`crypto/rand`),
         persiste `HMAC-SHA256(pepper, code)` y envía SMS (stub en dev).
         Rate limit: 3/hora por teléfono, 10/hora por IP; cooldown 60s.
+        El código no se devuelve en la respuesta (solo llega por SMS).
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [cedula]
-              properties:
-                cedula: { type: string, example: "16530276" }
+              $ref: "#/components/schemas/SolicitarOTPRequest"
+            example:
+              cedula: "111624956"
       responses:
         "200":
           description: Código enviado (destino enmascarado)
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ApiResponse"
+                $ref: "#/components/schemas/ApiResponseSolicitarOTP"
+              example:
+                message: Codigo enviado
+                data:
+                  destination_masked: "****2233"
+                  expires_in_seconds: 300
+                  channel: sms
+                error: null
+                code: 200
         "404":
           description: ERR_CLIENTE_NO_ENCONTRADO
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                message: Cliente no encontrado
+                data: null
+                error: ERR_CLIENTE_NO_ENCONTRADO
+                code: 404
         "422":
           description: ERR_SIN_TELEFONO
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                message: Cliente sin telefono registrado
+                data: null
+                error: ERR_SIN_TELEFONO
+                code: 422
         "429":
           description: ERR_RATE_LIMIT o ERR_OTP_COOLDOWN
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                message: Espera unos segundos antes de pedir otro codigo
+                data: null
+                error: ERR_OTP_COOLDOWN
+                code: 429
 
   /v1/portal-cliente/auth/verificar-otp:
     post:
@@ -86,29 +133,58 @@ paths:
       operationId: portalClienteVerificarOTP
       description: |
         Valida OTP (TTL 5 min, max 5 intentos). Resuelve el único contrato
-        `activo` del cliente y emite JWT con `cliente_id` + `contrato_id`.
-        Si hay más de un activo → ERR_MULTI_CONTRATO.
+        `activo` del cliente y emite JWT con `cliente_id` + `contrato_id`
+        (`aud=portal-cliente`). Si hay más de un activo → ERR_MULTI_CONTRATO.
+
+        Copia `data.access_token` y úsalo en **Authorize** para los endpoints
+        protegidos.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [cedula, codigo]
-              properties:
-                cedula: { type: string }
-                codigo: { type: string, minLength: 6, maxLength: 6 }
+              $ref: "#/components/schemas/VerificarOTPRequest"
+            example:
+              cedula: "111624956"
+              codigo: "482917"
       responses:
         "200":
           description: JWT emitido
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ApiResponse"
+                $ref: "#/components/schemas/ApiResponseVerificarOTP"
+              example:
+                message: Autenticado
+                data:
+                  access_token: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJwb3J0YWwtY2xpZW50ZSIsImNsaWVudGVfaWQiOjEwNDIsImNvbnRyYXRvX2lkIjoyMDYyfQ.signature
+                  expires_in_seconds: 86400
+                  cliente_id: 1042
+                  contrato_id: 2062
+                error: null
+                code: 200
         "400":
           description: OTP inválido / expirado / max intentos
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                message: Codigo invalido
+                data: null
+                error: ERR_OTP_INVALIDO
+                code: 400
         "409":
           description: Multi-contrato o sin contrato activo
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                message: Mas de un contrato activo; caso no soportado hoy
+                data: null
+                error: ERR_MULTI_CONTRATO
+                code: 409
 
   /v1/portal-cliente/mi-cuenta:
     get:
@@ -119,22 +195,70 @@ paths:
         - PortalClienteBearer: []
       description: |
         Usa `cliente_id`/`contrato_id` del claim (no del query). Incluye
-        `EtiquetaEstadoCliente`, `recargo_permanente`, `monto_pago_referencia_usd`
+        `estado_cliente`, `recargo_permanente`, `monto_pago_referencia_usd`
         (encabezado: puntual o puntual+recargo, sin penalidad de cuota),
-        cuotas pagadas y próxima cuota con `monto_esperado_usd` (cobro completo)
-        y equivalente Bs vía `equivalenteBsDesdeUSDAplicaParam` (tasa del día;
-        TODO CEO Opción A/B).
+        cuotas pagadas y próxima cuota con `monto_esperado_usd` (cobro completo,
+        sí puede incluir penalidad de esa cuota) y equivalente Bs vía
+        `equivalenteBsDesdeUSDAplicaParam` (tasa del día; TODO CEO Opción A/B).
+
+        **Requiere autenticación previa:** 1) `POST /v1/portal-cliente/auth/solicitar-otp`
+        con tu cédula, 2) `POST /v1/portal-cliente/auth/verificar-otp` con el
+        código recibido por SMS para obtener el `access_token`, 3) usa ese
+        token aquí (botón **Authorize** arriba).
       responses:
         "200":
           description: OK
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/ApiResponse"
+                $ref: "#/components/schemas/ApiResponseMiCuenta"
+              example:
+                message: Mi cuenta
+                data:
+                  cliente_id: 1042
+                  contrato_id: 2062
+                  mongo_contrato_id: con_MIGTEST_S00989
+                  cedula: "111624956"
+                  nombre: Gabriel Quintero
+                  estado_cobranza: activo
+                  estado_cliente: Pago regular
+                  recargo_permanente: true
+                  monto_pago_referencia_usd: 51
+                  monto_pago_referencia_bs: 52857.216
+                  zona_gris: false
+                  cuotas_pagadas: 4
+                  cuotas_total: 52
+                  proxima_cuota:
+                    numero_cuota: 5
+                    estado: pendiente
+                    fecha_vencimiento: "2026-08-26T00:00:00Z"
+                    monto_esperado_usd: 51
+                    monto_esperado_bs: 52857.216
+                    monto_puntual_usd: 36
+                error: null
+                code: 200
         "401":
           description: ERR_UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                message: No autorizado
+                data: null
+                error: ERR_UNAUTHORIZED
+                code: 401
         "403":
           description: ERR_FORBIDDEN
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                message: No autorizado para este contrato
+                data: null
+                error: ERR_FORBIDDEN
+                code: 403
 
   /v1/portal-cliente/pagos/reportar:
     post:
@@ -146,40 +270,297 @@ paths:
       description: |
         Reutiliza `RegistrarPagoEnProceso` con `AutoReportadoCliente=true`.
         El `contrato_id` sale **solo** del JWT (el body no puede fijar otro).
+        El pago queda `en_proceso` hasta confirmación/rechazo humano.
+        Validación de sanidad de `fecha_pago`: no futura (tolerancia 5 min) ni
+        anterior a la firma del contrato.
+
+        **Requiere autenticación previa:** 1) `POST /v1/portal-cliente/auth/solicitar-otp`
+        con tu cédula, 2) `POST /v1/portal-cliente/auth/verificar-otp` con el
+        código recibido por SMS para obtener el `access_token`, 3) usa ese
+        token aquí (botón **Authorize** arriba).
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required: [canal, monto, moneda, fecha_pago]
-              properties:
-                canal:
-                  type: string
-                  enum: [pay_zelle, pay_binance, efectivo_concesionario, pago_movil, deposito_custodio]
-                monto: { type: number, exclusiveMinimum: 0 }
-                moneda: { type: string, minLength: 3, maxLength: 3 }
-                referencia_externa: { type: string, maxLength: 255 }
-                fecha_pago: { type: string, format: date-time }
+              $ref: "#/components/schemas/ReportarPagoRequest"
+            example:
+              canal: pay_zelle
+              monto: 51
+              moneda: USD
+              referencia_externa: ZELLE-REF-48291
+              fecha_pago: "2026-08-09T15:30:00Z"
       responses:
         "201":
           description: Pago en_proceso creado
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponseReportarPago"
+              example:
+                message: pago en_proceso; protege cuota 5 hasta confirmación contable
+                data:
+                  pago:
+                    id: pag_01JABCDEFGHJKLMNPQRSTUVWX
+                    contrato_id: 2062
+                    canal: pay_zelle
+                    referencia_externa: ZELLE-REF-48291
+                    monto: "51.0000"
+                    moneda: USD
+                    verificado_por: null
+                    fecha_pago: "2026-08-09T15:30:00Z"
+                    estado: en_proceso
+                    cuota_protegida_id: cuo_01JXYZABCDEFGHJKLMNPQRST
+                    created_at: "2026-08-09T15:31:02.123Z"
+                  numero_cuota: 5
+                  cuota_protegida_id: cuo_01JXYZABCDEFGHJKLMNPQRST
+                  mensaje: pago en_proceso; protege cuota 5 hasta confirmación contable
+                error: null
+                code: 201
+        "400":
+          description: ERR_FECHA_PAGO u otra validación
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                message: fecha_pago no puede ser posterior a ahora
+                data: null
+                error: ERR_FECHA_PAGO
+                code: 400
         "401":
           description: ERR_UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                message: No autorizado
+                data: null
+                error: ERR_UNAUTHORIZED
+                code: 401
         "403":
           description: ERR_FORBIDDEN
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                message: No autorizado para este contrato
+                data: null
+                error: ERR_FORBIDDEN
+                code: 403
         "409":
           description: ERR_SIN_CUOTA
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              example:
+                message: No hay cuota abierta para proteger
+                data: null
+                error: ERR_SIN_CUOTA
+                code: 409
 
 components:
   securitySchemes:
+    # Nombre referenciado en security: de mi-cuenta y pagos/reportar.
+    # Swagger UI muestra Authorize (candado) global al detectar este scheme
+    # tipo http/bearer; el token pegado se aplica a esas operaciones.
     PortalClienteBearer:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: JWT RS256 aud=portal-cliente (clave PORTAL_CLIENTE_JWT_KEY_PATH)
+      description: |
+        JWT RS256 `aud=portal-cliente` (clave `PORTAL_CLIENTE_JWT_KEY_PATH`).
+        Obtenerlo con verificar-otp. En Authorize pega solo el token
+        (Swagger agrega el prefijo Bearer).
 
   schemas:
+    ApiError:
+      type: object
+      required: [message, data, error, code]
+      properties:
+        message: { type: string }
+        data: { type: "null" }
+        error: { type: string }
+        code: { type: integer }
+
+    SolicitarOTPRequest:
+      type: object
+      required: [cedula]
+      properties:
+        cedula:
+          type: string
+          example: "111624956"
+          description: Cédula venezolana (el servidor normaliza)
+
+    VerificarOTPRequest:
+      type: object
+      required: [cedula, codigo]
+      properties:
+        cedula: { type: string, example: "111624956" }
+        codigo:
+          type: string
+          minLength: 6
+          maxLength: 6
+          example: "482917"
+
+    ReportarPagoRequest:
+      type: object
+      required: [canal, monto, moneda, fecha_pago]
+      properties:
+        canal:
+          type: string
+          enum: [pay_zelle, pay_binance, efectivo_concesionario, pago_movil, deposito_custodio]
+          example: pay_zelle
+        monto: { type: number, exclusiveMinimum: 0, example: 51 }
+        moneda: { type: string, minLength: 3, maxLength: 3, example: USD }
+        referencia_externa: { type: string, maxLength: 255, example: ZELLE-REF-48291 }
+        fecha_pago:
+          type: string
+          format: date-time
+          example: "2026-08-09T15:30:00Z"
+
+    SolicitarOTPData:
+      type: object
+      required: [destination_masked, expires_in_seconds, channel]
+      properties:
+        destination_masked: { type: string, example: "****2233" }
+        expires_in_seconds: { type: integer, example: 300 }
+        channel: { type: string, example: sms }
+
+    VerificarOTPData:
+      type: object
+      required: [access_token, expires_in_seconds, cliente_id, contrato_id]
+      properties:
+        access_token:
+          type: string
+          description: Pegar en Authorize (sin prefijo Bearer)
+          example: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJwb3J0YWwtY2xpZW50ZSJ9.signature
+        expires_in_seconds: { type: integer, example: 86400 }
+        cliente_id: { type: integer, format: int64, example: 1042 }
+        contrato_id: { type: integer, format: int64, example: 2062 }
+
+    MiCuentaProximaCuota:
+      type: object
+      properties:
+        numero_cuota: { type: integer, example: 5 }
+        estado: { type: string, example: pendiente }
+        fecha_vencimiento: { type: string, format: date-time, example: "2026-08-26T00:00:00Z" }
+        monto_esperado_usd:
+          type: number
+          example: 51
+          description: Cobro completo de la cuota (puede incluir penalidad)
+        monto_esperado_bs: { type: number, example: 52857.216 }
+        monto_puntual_usd: { type: number, example: 36 }
+
+    MiCuentaData:
+      type: object
+      properties:
+        cliente_id: { type: integer, format: int64, example: 1042 }
+        contrato_id: { type: integer, format: int64, example: 2062 }
+        mongo_contrato_id: { type: string, example: con_MIGTEST_S00989 }
+        cedula: { type: string, example: "111624956" }
+        nombre: { type: string, example: Gabriel Quintero }
+        estado_cobranza: { type: string, example: activo }
+        estado_cliente: { type: string, example: Pago regular }
+        recargo_permanente: { type: boolean, example: true }
+        monto_pago_referencia_usd:
+          type: number
+          example: 51
+          description: Encabezado (puntual o puntual+recargo; sin penalidad)
+        monto_pago_referencia_bs: { type: number, example: 52857.216 }
+        zona_gris: { type: boolean, example: false }
+        cuotas_pagadas: { type: integer, example: 4 }
+        cuotas_total: { type: integer, example: 52 }
+        proxima_cuota:
+          $ref: "#/components/schemas/MiCuentaProximaCuota"
+
+    PagoEnProceso:
+      type: object
+      properties:
+        id: { type: string, example: pag_01JABCDEFGHJKLMNPQRSTUVWX }
+        contrato_id: { type: integer, format: int64, example: 2062 }
+        canal: { type: string, example: pay_zelle }
+        referencia_externa: { type: string, example: ZELLE-REF-48291 }
+        monto: { type: string, example: "51.0000" }
+        moneda: { type: string, example: USD }
+        verificado_por: { type: "null" }
+        fecha_pago: { type: string, format: date-time, example: "2026-08-09T15:30:00Z" }
+        estado: { type: string, example: en_proceso }
+        cuota_protegida_id: { type: string, example: cuo_01JXYZABCDEFGHJKLMNPQRST }
+        created_at: { type: string, format: date-time, example: "2026-08-09T15:31:02.123Z" }
+
+    ReportarPagoData:
+      type: object
+      properties:
+        pago:
+          $ref: "#/components/schemas/PagoEnProceso"
+        numero_cuota: { type: integer, example: 5 }
+        cuota_protegida_id: { type: string, example: cuo_01JXYZABCDEFGHJKLMNPQRST }
+        mensaje:
+          type: string
+          example: pago en_proceso; protege cuota 5 hasta confirmación contable
+
+    ApiResponseSolicitarOTP:
+      type: object
+      required: [message, data, error, code]
+      properties:
+        message: { type: string, example: Codigo enviado }
+        data:
+          $ref: "#/components/schemas/SolicitarOTPData"
+        error:
+          oneOf:
+            - type: string
+            - type: "null"
+          example: null
+        code: { type: integer, example: 200 }
+
+    ApiResponseVerificarOTP:
+      type: object
+      required: [message, data, error, code]
+      properties:
+        message: { type: string, example: Autenticado }
+        data:
+          $ref: "#/components/schemas/VerificarOTPData"
+        error:
+          oneOf:
+            - type: string
+            - type: "null"
+          example: null
+        code: { type: integer, example: 200 }
+
+    ApiResponseMiCuenta:
+      type: object
+      required: [message, data, error, code]
+      properties:
+        message: { type: string, example: Mi cuenta }
+        data:
+          $ref: "#/components/schemas/MiCuentaData"
+        error:
+          oneOf:
+            - type: string
+            - type: "null"
+          example: null
+        code: { type: integer, example: 200 }
+
+    ApiResponseReportarPago:
+      type: object
+      required: [message, data, error, code]
+      properties:
+        message:
+          type: string
+          example: pago en_proceso; protege cuota 5 hasta confirmación contable
+        data:
+          $ref: "#/components/schemas/ReportarPagoData"
+        error:
+          oneOf:
+            - type: string
+            - type: "null"
+          example: null
+        code: { type: integer, example: 201 }
+
     ApiResponse:
       type: object
       required: [message, data, error, code]
@@ -191,3 +572,4 @@ components:
             - type: string
             - type: "null"
         code: { type: integer }
+      description: Envelope genérico (legacy); preferir schemas tipados por endpoint
