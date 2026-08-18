@@ -26,6 +26,8 @@ info:
 servers:
   - url: http://localhost:8082
     description: Local development (portal-cliente)
+  - url: https://portal-cliente-api-qa.glik7.com
+    description: QA (Backoffice Glik)
   - url: https://portal-cliente-api.glik.com.ve
     description: Production (placeholder)
 
@@ -197,9 +199,11 @@ paths:
         Usa `cliente_id`/`contrato_id` del claim (no del query). Incluye
         `estado_cliente`, `recargo_permanente`, `monto_pago_referencia_usd`
         (encabezado: puntual o puntual+recargo, sin penalidad de cuota),
-        cuotas pagadas y próxima cuota con `monto_esperado_usd` (cobro completo,
-        sí puede incluir penalidad de esa cuota) y equivalente Bs vía
-        `equivalenteBsDesdeUSDAplicaParam` (tasa del día; TODO CEO Opción A/B).
+        cuotas pagadas, próxima cuota con `monto_esperado_usd` (cobro completo,
+        sí puede incluir penalidad de esa cuota) y `historial_cuotas` (pagadas
+        y vencidas, más reciente primero; la próxima_cuota vencida puede
+        repetirse ahí). Equivalente Bs vía `equivalenteBsDesdeUSDAplicaParam`
+        (tasa del día; TODO CEO Opción A/B).
 
         **Requiere autenticación previa:** 1) `POST /v1/portal-cliente/auth/solicitar-otp`
         con tu cédula, 2) `POST /v1/portal-cliente/auth/verificar-otp` con el
@@ -230,11 +234,39 @@ paths:
                   cuotas_total: 52
                   proxima_cuota:
                     numero_cuota: 5
-                    estado: pendiente
+                    estado: vencida
                     fecha_vencimiento: "2026-08-26T00:00:00Z"
                     monto_esperado_usd: 51
                     monto_esperado_bs: 52857.216
                     monto_puntual_usd: 36
+                  historial_cuotas:
+                    - numero_cuota: 5
+                      estado: vencida
+                      fecha_vencimiento: "2026-08-26T00:00:00Z"
+                      monto_esperado_usd: 51
+                      monto_esperado_bs: 52857.216
+                      monto_puntual_usd: 36
+                      penalidad_prospectiva_usd: 5
+                      penalidad_prospectiva_bs: 5185.8
+                      estatus_pago: "VENCIDA"
+                    - numero_cuota: 4
+                      estado: pagada
+                      fecha_vencimiento: "2026-08-19T00:00:00Z"
+                      monto_esperado_usd: 36
+                      monto_esperado_bs: 37337.76
+                      monto_puntual_usd: 36
+                      penalidad_prospectiva_usd: null
+                      penalidad_prospectiva_bs: null
+                      estatus_pago: "PAGADA AL DIA"
+                    - numero_cuota: 1
+                      estado: pagada
+                      fecha_vencimiento: "2026-07-29T00:00:00Z"
+                      monto_esperado_usd: 46
+                      monto_esperado_bs: 47709.36
+                      monto_puntual_usd: 36
+                      penalidad_prospectiva_usd: null
+                      penalidad_prospectiva_bs: null
+                      estatus_pago: "PAGADA CON ATRASO"
                 error: null
                 code: 200
         "401":
@@ -455,6 +487,39 @@ components:
         monto_esperado_bs: { type: number, example: 52857.216 }
         monto_puntual_usd: { type: number, example: 36 }
 
+    MiCuentaHistorialCuota:
+      type: object
+      properties:
+        numero_cuota: { type: integer, example: 2 }
+        estado: { type: string, enum: [pagada, vencida], example: pagada }
+        fecha_vencimiento: { type: string, format: date-time, example: "2026-08-05T00:00:00Z" }
+        monto_esperado_usd:
+          type: number
+          example: 36
+          description: |
+            Monto real cobrado (pagada) o a cobrar (vencida). Respeta la
+            regla de recargo NO retroactivo: si la cuota se pagó ANTES de
+            que el recargo_permanente se activara para este contrato, no
+            incluye recargo aunque el contrato lo tenga activo hoy.
+        monto_esperado_bs: { type: number, example: 37337.76 }
+        monto_puntual_usd: { type: number, example: 36 }
+        penalidad_prospectiva_usd:
+          type: number
+          nullable: true
+          example: null
+          description: Solo presente en cuotas VENCIDAS sin penalidad ya aplicada.
+        penalidad_prospectiva_bs:
+          type: number
+          nullable: true
+          example: null
+        estatus_pago:
+          type: string
+          example: "PAGADA AL DIA"
+          description: |
+            "PAGADA AL DIA" | "PAGADA CON ATRASO" (solo si estado=pagada) |
+            "VENCIDA" (si estado=vencida). Mismo cálculo que usa el portal
+            de analistas (Control de Pago).
+
     MiCuentaData:
       type: object
       properties:
@@ -476,6 +541,16 @@ components:
         cuotas_total: { type: integer, example: 52 }
         proxima_cuota:
           $ref: "#/components/schemas/MiCuentaProximaCuota"
+        historial_cuotas:
+          type: array
+          description: |
+            Cuotas ya PAGADAS o VENCIDAS (nunca pendientes/futuras), ordenadas
+            de fecha_vencimiento más reciente a más antigua. La próxima_cuota
+            puede repetirse aquí si es una cuota vencida (intencional: cada
+            campo responde una pregunta distinta — "qué pagar ahora" vs
+            "estado de cuenta completo").
+          items:
+            $ref: "#/components/schemas/MiCuentaHistorialCuota"
 
     PagoEnProceso:
       type: object
