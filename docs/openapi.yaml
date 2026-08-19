@@ -2,10 +2,16 @@ openapi: 3.1.0
 
 info:
   title: Glik Cobranzas — Portal Cliente API
-  version: 0.1.0
+  version: 0.1.1
   description: |
-    API de **autogestión de clientes** (`cmd/portal-cliente`), binario separado
-    del staff de cobranzas. Puerto default `8082` (`PORT_PORTAL_CLIENTE`).
+    API de **autogestión de clientes**
+    ([api-autogestion-clientes](https://github.com/ramongonzalez-cmd/api-autogestion-clientes)),
+    servicio HTTP separado del staff de cobranzas. Puerto default `8082`
+    (`PORT` o `PORT_PORTAL_CLIENTE`).
+
+    Reutiliza dominio de cobranzas (montos, mora, pagos en_proceso) vía módulo Go
+    compartido. Documentación interactiva:
+    [portal-cliente-api-docs](https://ramongonzalez-cmd.github.io/portal-cliente-api-docs/).
 
     Auth por OTP SMS + JWT propio (`aud=portal-cliente`, clave RSA distinta
     de staff). Aislamiento estricto por `contrato_id` del claim.
@@ -19,13 +25,9 @@ info:
        `Bearer `) y confirma. Swagger enviará
        `Authorization: Bearer <token>` en `mi-cuenta` y `pagos/reportar`.
 
-    **Pendiente:** migrar/enlazar esta spec a `glik-api-docs` (GitHub Pages)
-    cuando ese repo esté disponible. Estilo alineado a
-    `ecosistema-backend/docs/openapi.yaml`.
-
 servers:
   - url: http://localhost:8082
-    description: Local development (portal-cliente)
+    description: Local development
   - url: https://portal-cliente-api-qa.glik7.com
     description: QA (Backoffice Glik)
   - url: https://portal-cliente-api.glik.com.ve
@@ -56,10 +58,10 @@ paths:
                 type: object
                 properties:
                   status: { type: string, example: ok }
-                  service: { type: string, example: portal-cliente }
+                  service: { type: string, example: autogestion-clientes }
               example:
                 status: ok
-                service: portal-cliente
+                service: autogestion-clientes
 
   /v1/portal-cliente/auth/solicitar-otp:
     post:
