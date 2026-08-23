@@ -9,8 +9,9 @@ info:
     servicio HTTP separado del staff de cobranzas. Puerto default `8082`
     (`PORT` o `PORT_PORTAL_CLIENTE`).
 
-    Reutiliza dominio de cobranzas (montos, mora, pagos en_proceso) vía módulo Go
-    compartido. Documentación interactiva:
+    BFF que reenvía HTTP hacia cobranzas-backend; el dominio de negocio
+    (montos, mora, pagos en_proceso) vive completamente en cobranzas-backend,
+    montado en su propio proceso. Documentación interactiva:
     [portal-cliente-api-docs](https://ramongonzalez-cmd.github.io/portal-cliente-api-docs/).
 
     Auth por OTP SMS + JWT propio (`aud=portal-cliente`, clave RSA distinta
