@@ -298,14 +298,24 @@ paths:
   /v1/portal-cliente/pagos/reportar:
     post:
       tags: [portal-cliente]
-      summary: Reportar pago (en_proceso)
+      summary: Reportar pago (auto-conciliación o en_proceso)
       operationId: portalClienteReportarPago
       security:
         - PortalClienteBearer: []
       description: |
-        Reutiliza `RegistrarPagoEnProceso` con `AutoReportadoCliente=true`.
-        El `contrato_id` sale **solo** del JWT (el body no puede fijar otro).
-        El pago queda `en_proceso` hasta confirmación/rechazo humano.
+        Registra un pago reportado por el cliente. La placa y cédula usadas para
+        matching salen **solo** del contrato asociado al JWT (el body no puede fijar
+        otra identidad).
+
+        Este endpoint intenta conciliación automática si el servicio de conciliación
+        está configurado (`WORKER_ODOO_BASE_URL` en el servidor); si no está
+        disponible o no logra conciliar, el pago queda en estado `en_proceso` para
+        revisión manual (comportamiento por defecto).
+
+        Cuando hay auto-match exitoso, el pago puede quedar `conciliado` de inmediato
+        (el worker ya ingirió el pago vía `POST /v1/pagos/ingesta`). En cualquier
+        otro caso se reutiliza `RegistrarPagoEnProceso` con `AutoReportadoCliente=true`.
+
         Validación de sanidad de `fecha_pago`: no futura (tolerancia 5 min) ni
         anterior a la firma del contrato.
 
@@ -325,9 +335,12 @@ paths:
               moneda: USD
               referencia_externa: ZELLE-REF-48291
               fecha_pago: "2026-08-09T15:30:00Z"
+              remitente: Juan Perez
       responses:
         "201":
-          description: Pago en_proceso creado
+          description: |
+            Pago reportado. `estado` puede ser `en_proceso` (revisión manual) o
+            `conciliado` si hubo auto-match exitoso.
           content:
             application/json:
               schema:
@@ -456,6 +469,16 @@ components:
           type: string
           format: date-time
           example: "2026-08-09T15:30:00Z"
+        remitente:
+          type: string
+          maxLength: 255
+          example: Juan Perez
+          description: |
+            **Opcional.** Nombre o usuario del pagador (titular Zelle, usuario Binance,
+            etc.) usado solo para el matching automático cuando el servidor tiene
+            `WORKER_ODOO_BASE_URL` configurado. No es requerido para el flujo normal
+            `en_proceso`; si se omite o no hay auto-match, el comportamiento es el de
+            siempre (pago pendiente de revisión humana).
 
     SolicitarOTPData:
       type: object
@@ -579,6 +602,9 @@ components:
         cuota_protegida_id: { type: string, example: cuo_01JXYZABCDEFGHJKLMNPQRST }
         mensaje:
           type: string
+          description: |
+            Mensaje orientado al cliente. Ejemplos: confirmación `en_proceso` o
+            aviso de conciliación automática si hubo auto-match.
           example: pago en_proceso; protege cuota 5 hasta confirmación contable
 
     ApiResponseSolicitarOTP:
