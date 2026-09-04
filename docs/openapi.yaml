@@ -71,9 +71,17 @@ paths:
       operationId: portalClienteSolicitarOTP
       description: |
         Busca `ref_clientes` por cédula, genera OTP 6 dígitos (`crypto/rand`),
-        persiste `HMAC-SHA256(pepper, code)` y envía SMS (stub en dev).
+        persiste `HMAC-SHA256(pepper, code)` y envía SMS (stub en dev/QA).
         Rate limit: 3/hora por teléfono, 10/hora por IP; cooldown 60s.
-        El código no se devuelve en la respuesta (solo llega por SMS).
+
+        **Producción y ambientes normales:** el código OTP **no** se devuelve en la
+        respuesta (solo llega por SMS).
+
+        **Excepción QA (doble protección):** el campo opcional `otp_debug_solo_qa`
+        solo aparece si (1) `OTP_EXPONER_EN_RESPUESTA_QA=1` en el servidor **y**
+        (2) el proveedor SMS es el stub simulado (`LoggingSMSProvider`, sin envío real).
+        Si se conecta un proveedor SMS real, el código **nunca** se incluye en la
+        respuesta aunque la variable esté activa.
       requestBody:
         required: true
         content:
@@ -191,6 +199,29 @@ paths:
                 error: ERR_MULTI_CONTRATO
                 code: 409
 
+  /v1/portal-cliente/cuentas-bancarias:
+    get:
+      tags: [portal-cliente]
+      summary: Cuentas bancarias activas del concesionario del contrato JWT
+      operationId: portalClienteCuentasBancarias
+      security:
+        - PortalClienteBearer: []
+      description: |
+        Resuelve `concesionario_id` desde el `contrato_id` del JWT (no acepta
+        query de concesionario). Devuelve solo cuentas `activa=true` para el
+        selector de Pago Móvil / Transferencia Bs en autogestión.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiResponseCuentasBancarias"
+        "401":
+          description: No autenticado
+        "403":
+          description: Contrato no autorizado
+
   /v1/portal-cliente/mi-cuenta:
     get:
       tags: [portal-cliente]
@@ -202,11 +233,20 @@ paths:
         Usa `cliente_id`/`contrato_id` del claim (no del query). Incluye
         `estado_cliente`, `recargo_permanente`, `monto_pago_referencia_usd`
         (encabezado: puntual o puntual+recargo, sin penalidad de cuota),
-        cuotas pagadas, próxima cuota con `monto_esperado_usd` (cobro completo,
-        sí puede incluir penalidad de esa cuota) y `historial_cuotas` (pagadas
-        y vencidas, más reciente primero; la próxima_cuota vencida puede
-        repetirse ahí). Equivalente Bs vía `equivalenteBsDesdeUSDAplicaParam`
-        (tasa del día; TODO CEO Opción A/B).
+        cuotas pagadas y próxima cuota con `monto_esperado_usd` (base ±
+        recargo + `penalidad_retraso_aplicada` histórica de BD; **no** mezcla
+        la prospectiva) y equivalente Bs vía `equivalenteBsDesdeUSDAplicaParam`.
+
+        Si la próxima cuota está **vencida**, puede venir además
+        `penalidad_prospectiva_usd` / `penalidad_prospectiva_bs`: cargo
+        adicional estimado si pagara hoy (misma regla que Contabilidad /
+        `PenalidadRetrasoProspectiva`). Son omitidos si no aplica o si un
+        convenio activo congela la fee (resultado 0).
+
+        **UI (app cliente):** cuando `penalidad_prospectiva_usd` venga poblado,
+        mostrar el monto base y la penalidad como **dos líneas separadas**, con
+        nota de que es un cargo adicional por atraso — no sumarlos en un solo
+        número sin explicación.
 
         **Requiere autenticación previa:** 1) `POST /v1/portal-cliente/auth/solicitar-otp`
         con tu cédula, 2) `POST /v1/portal-cliente/auth/verificar-otp` con el
@@ -223,53 +263,27 @@ paths:
                 message: Mi cuenta
                 data:
                   cliente_id: 1042
-                  contrato_id: 2062
-                  mongo_contrato_id: con_MIGTEST_S00989
+                  contrato_id: 2061
+                  mongo_contrato_id: con_MIGTEST_S01021
                   cedula: "111624956"
-                  nombre: Gabriel Quintero
+                  nombre: Cliente Demo
                   estado_cobranza: activo
                   estado_cliente: Pago regular
-                  recargo_permanente: true
-                  monto_pago_referencia_usd: 51
-                  monto_pago_referencia_bs: 52857.216
+                  recargo_permanente: false
+                  monto_pago_referencia_usd: 53
+                  monto_pago_referencia_bs: 54930.0
                   zona_gris: false
-                  cuotas_pagadas: 4
+                  cuotas_pagadas: 0
                   cuotas_total: 52
                   proxima_cuota:
-                    numero_cuota: 5
+                    numero_cuota: 1
                     estado: vencida
-                    fecha_vencimiento: "2026-08-26T00:00:00Z"
-                    monto_esperado_usd: 51
-                    monto_esperado_bs: 52857.216
-                    monto_puntual_usd: 36
-                  historial_cuotas:
-                    - numero_cuota: 5
-                      estado: vencida
-                      fecha_vencimiento: "2026-08-26T00:00:00Z"
-                      monto_esperado_usd: 51
-                      monto_esperado_bs: 52857.216
-                      monto_puntual_usd: 36
-                      penalidad_prospectiva_usd: 5
-                      penalidad_prospectiva_bs: 5185.8
-                      estatus_pago: "VENCIDA"
-                    - numero_cuota: 4
-                      estado: pagada
-                      fecha_vencimiento: "2026-08-19T00:00:00Z"
-                      monto_esperado_usd: 36
-                      monto_esperado_bs: 37337.76
-                      monto_puntual_usd: 36
-                      penalidad_prospectiva_usd: null
-                      penalidad_prospectiva_bs: null
-                      estatus_pago: "PAGADA AL DIA"
-                    - numero_cuota: 1
-                      estado: pagada
-                      fecha_vencimiento: "2026-07-29T00:00:00Z"
-                      monto_esperado_usd: 46
-                      monto_esperado_bs: 47709.36
-                      monto_puntual_usd: 36
-                      penalidad_prospectiva_usd: null
-                      penalidad_prospectiva_bs: null
-                      estatus_pago: "PAGADA CON ATRASO"
+                    fecha_vencimiento: "2026-08-03T00:00:00Z"
+                    monto_esperado_usd: 53
+                    monto_esperado_bs: 54930.0
+                    monto_puntual_usd: 53
+                    penalidad_prospectiva_usd: 5
+                    penalidad_prospectiva_bs: 5182.08
                 error: null
                 code: 200
         "401":
@@ -460,7 +474,7 @@ components:
       properties:
         canal:
           type: string
-          enum: [pay_zelle, pay_binance, efectivo_concesionario, pago_movil, deposito_custodio]
+          enum: [pay_zelle, pay_binance, efectivo_concesionario, pago_movil, transferencia_bs, deposito_custodio]
           example: pay_zelle
         monto: { type: number, exclusiveMinimum: 0, example: 51 }
         moneda: { type: string, minLength: 3, maxLength: 3, example: USD }
@@ -479,6 +493,41 @@ components:
             `WORKER_ODOO_BASE_URL` configurado. No es requerido para el flujo normal
             `en_proceso`; si se omite o no hay auto-match, el comportamiento es el de
             siempre (pago pendiente de revisión humana).
+        cuenta_bancaria_id:
+          type: integer
+          format: int64
+          example: 12
+          description: |
+            **Requerido** cuando `canal` es `pago_movil` o `transferencia_bs`.
+            Debe ser una cuenta activa del concesionario del contrato del JWT.
+            El backend guarda FK + snapshot (`banco_destino`, etc.) en `pagos`.
+
+    PortalCuentaBancaria:
+      type: object
+      required: [id, banco, numero_cuenta, telefono, rif, titular]
+      properties:
+        id: { type: integer, format: int64, example: 12 }
+        banco: { type: string, example: "BNC (0191)" }
+        numero_cuenta: { type: string, example: "019100011122" }
+        telefono: { type: string, example: "04129310142" }
+        rif: { type: string, example: "J-50498760-3" }
+        titular: { type: string, example: "MOBILITY DC, C.A." }
+
+    ApiResponseCuentasBancarias:
+      type: object
+      required: [message, data, error, code]
+      properties:
+        message: { type: string, example: Cuentas bancarias }
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/PortalCuentaBancaria"
+        error:
+          oneOf:
+            - type: string
+            - type: "null"
+          example: null
+        code: { type: integer, example: 200 }
 
     SolicitarOTPData:
       type: object
@@ -487,6 +536,14 @@ components:
         destination_masked: { type: string, example: "****2233" }
         expires_in_seconds: { type: integer, example: 300 }
         channel: { type: string, example: sms }
+        otp_debug_solo_qa:
+          type: string
+          example: "580312"
+          description: >
+            **Solo QA, opcional.** Código OTP en plaintext cuando el servidor tiene
+            `OTP_EXPONER_EN_RESPUESTA_QA=1` **y** el proveedor SMS es el stub simulado
+            (sin envío real). Ausente en producción y si hay proveedor SMS real conectado,
+            aunque la variable de entorno esté activa por error.
 
     VerificarOTPData:
       type: object
@@ -503,48 +560,33 @@ components:
     MiCuentaProximaCuota:
       type: object
       properties:
-        numero_cuota: { type: integer, example: 5 }
-        estado: { type: string, example: pendiente }
-        fecha_vencimiento: { type: string, format: date-time, example: "2026-08-26T00:00:00Z" }
+        numero_cuota: { type: integer, example: 1 }
+        estado: { type: string, example: vencida }
+        fecha_vencimiento: { type: string, format: date-time, example: "2026-08-03T00:00:00Z" }
         monto_esperado_usd:
           type: number
-          example: 51
-          description: Cobro completo de la cuota (puede incluir penalidad)
-        monto_esperado_bs: { type: number, example: 52857.216 }
-        monto_puntual_usd: { type: number, example: 36 }
-
-    MiCuentaHistorialCuota:
-      type: object
-      properties:
-        numero_cuota: { type: integer, example: 2 }
-        estado: { type: string, enum: [pagada, vencida], example: pagada }
-        fecha_vencimiento: { type: string, format: date-time, example: "2026-08-05T00:00:00Z" }
-        monto_esperado_usd:
-          type: number
-          example: 36
-          description: |
-            Monto real cobrado (pagada) o a cobrar (vencida). Respeta la
-            regla de recargo NO retroactivo: si la cuota se pagó ANTES de
-            que el recargo_permanente se activara para este contrato, no
-            incluye recargo aunque el contrato lo tenga activo hoy.
-        monto_esperado_bs: { type: number, example: 37337.76 }
-        monto_puntual_usd: { type: number, example: 36 }
+          example: 53
+          description: >
+            Base del contrato (puntual ± recargo) más penalidad_retraso_aplicada
+            histórica de BD si ya se cobró. No incluye la prospectiva.
+        monto_esperado_bs: { type: number, example: 54930.0 }
+        monto_puntual_usd: { type: number, example: 53 }
         penalidad_prospectiva_usd:
           type: number
           nullable: true
-          example: null
-          description: Solo presente en cuotas VENCIDAS sin penalidad ya aplicada.
+          example: 5
+          description: >
+            Cargo adicional prospectivo si la cuota está vencida y pagara HOY
+            (PenalidadRetrasoProspectiva). Omitido/null si no aplica o convenio
+            activo lo reduce a 0. No es el monto base del contrato — la app debe
+            mostrarlo en línea aparte con nota de atraso, sin sumarlo opaco al base.
         penalidad_prospectiva_bs:
           type: number
           nullable: true
-          example: null
-        estatus_pago:
-          type: string
-          example: "PAGADA AL DIA"
-          description: |
-            "PAGADA AL DIA" | "PAGADA CON ATRASO" (solo si estado=pagada) |
-            "VENCIDA" (si estado=vencida). Mismo cálculo que usa el portal
-            de analistas (Control de Pago).
+          example: 5182.08
+          description: >
+            Equivalente Bs de penalidad_prospectiva_usd (misma tasa/param que
+            monto_esperado_bs). Solo presente cuando la prospectiva USD está poblada.
 
     MiCuentaData:
       type: object
@@ -567,16 +609,6 @@ components:
         cuotas_total: { type: integer, example: 52 }
         proxima_cuota:
           $ref: "#/components/schemas/MiCuentaProximaCuota"
-        historial_cuotas:
-          type: array
-          description: |
-            Cuotas ya PAGADAS o VENCIDAS (nunca pendientes/futuras), ordenadas
-            de fecha_vencimiento más reciente a más antigua. La próxima_cuota
-            puede repetirse aquí si es una cuota vencida (intencional: cada
-            campo responde una pregunta distinta — "qué pagar ahora" vs
-            "estado de cuenta completo").
-          items:
-            $ref: "#/components/schemas/MiCuentaHistorialCuota"
 
     PagoEnProceso:
       type: object
