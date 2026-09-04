@@ -594,6 +594,12 @@ components:
         cliente_id: { type: integer, format: int64, example: 1042 }
         contrato_id: { type: integer, format: int64, example: 2062 }
         mongo_contrato_id: { type: string, example: con_MIGTEST_S00989 }
+        codigo_contrato:
+          type: string
+          example: MMC_AX8D48G
+          description: |
+            Identificador de negocio legible. Preferirlo en UI frente a
+            `contrato_id` (id interno). Vacío en contratos antiguos sin código.
         cedula: { type: string, example: "111624956" }
         nombre: { type: string, example: Gabriel Quintero }
         estado_cobranza: { type: string, example: activo }
@@ -607,6 +613,13 @@ components:
         zona_gris: { type: boolean, example: false }
         cuotas_pagadas: { type: integer, example: 4 }
         cuotas_total: { type: integer, example: 52 }
+        saldo_a_favor_disponible:
+          type: number
+          example: 12.16
+          description: |
+            Suma de `saldos_a_favor.monto_disponible` con estado `disponible`.
+            Dinero ya cobrado que se aplicará automáticamente a la próxima
+            cuota que cierre. `0` si no hay saldo a favor.
         proxima_cuota:
           $ref: "#/components/schemas/MiCuentaProximaCuota"
 
