@@ -561,8 +561,23 @@ components:
       type: object
       properties:
         numero_cuota: { type: integer, example: 1 }
-        estado: { type: string, example: vencida }
-        fecha_vencimiento: { type: string, format: date-time, example: "2026-08-03T00:00:00Z" }
+        estado:
+          type: string
+          example: vencida
+          enum: [pendiente, vencida]
+          description: >
+            Estado oficial de la cuota en cobranzas (`pendiente` o `vencida`).
+            `vencida` lo marca el vencimiento_worker tras el corte 15:30 America/Caracas
+            del día de `fecha_vencimiento`. La app de autogestión debe usar este campo
+            (no comparar `fecha_vencimiento` con `Date` del navegador) para el label
+            "vence" vs "vencida".
+        fecha_vencimiento:
+          type: string
+          format: date-time
+          example: "2026-08-03T00:00:00Z"
+          description: >
+            Día de vencimiento de la cuota. No implica mora por sí solo: una fecha
+            ya pasada puede seguir `estado=pendiente` hasta el corte 15:30 Caracas.
         monto_esperado_usd:
           type: number
           example: 53
