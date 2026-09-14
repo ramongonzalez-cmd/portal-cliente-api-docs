@@ -2,7 +2,7 @@ openapi: 3.1.0
 
 info:
   title: Glik Cobranzas — Portal Cliente API
-  version: 0.1.1
+  version: 0.1.2
   description: |
     API de **autogestión de clientes**
     ([api-autogestion-clientes](https://github.com/ramongonzalez-cmd/api-autogestion-clientes)),
@@ -331,6 +331,137 @@ paths:
                 $ref: "#/components/schemas/ApiError"
         "403":
           description: ERR_FORBIDDEN
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /v1/portal-cliente/notificaciones/pendiente-modal:
+    get:
+      tags: [portal-cliente]
+      summary: Notificación pendiente para modal
+      operationId: portalClienteNotificacionPendienteModal
+      security:
+        - PortalClienteBearer: []
+      description: |
+        Devuelve la única campaña pendiente de ver del contrato incluido en el
+        JWT. Es de solo lectura: consultar este endpoint no confirma la
+        notificación. `item` es `null` cuando no existe una pendiente.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      item:
+                        oneOf:
+                          - type: "null"
+                          - type: object
+                            properties:
+                              campana_id: { type: integer }
+                              titulo: { type: string }
+                              cuerpo_sms: { type: string }
+                              cuerpo_rico: { type: string }
+                              canal:
+                                type: string
+                                enum: [sms, email, ambos]
+                              enviado_at: { type: string, format: date-time }
+                            required:
+                              - campana_id
+                              - titulo
+                              - cuerpo_sms
+                              - cuerpo_rico
+                              - canal
+                  error: { type: string, nullable: true }
+                  code: { type: integer }
+              example:
+                message: Notificacion pendiente
+                data:
+                  item: null
+                error: null
+                code: 200
+        "401":
+          description: ERR_UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "403":
+          description: ERR_FORBIDDEN
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
+  /v1/portal-cliente/notificaciones/{campana_id}/confirmar:
+    post:
+      tags: [portal-cliente]
+      summary: Confirmar recepción de notificación
+      operationId: portalClienteConfirmarNotificacion
+      security:
+        - PortalClienteBearer: []
+      description: |
+        Marca como recibida la campaña pendiente del contrato incluido en el
+        JWT y llena `visto_en`. Es idempotente si esa misma campaña ya estaba
+        recibida. No acepta `contrato_id` en query ni body.
+      parameters:
+        - name: campana_id
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Confirmada o ya confirmada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      campana_id: { type: integer }
+                      estado:
+                        type: string
+                        const: recibido
+                  error: { type: string, nullable: true }
+                  code: { type: integer }
+              example:
+                message: Notificacion recibida
+                data:
+                  campana_id: 123
+                  estado: recibido
+                error: null
+                code: 200
+        "401":
+          description: ERR_UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "403":
+          description: ERR_FORBIDDEN
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "404":
+          description: ERR_NOTIFICACION_NO_ENCONTRADA
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "409":
+          description: ERR_NOTIFICACION_NO_CONFIRMABLE
           content:
             application/json:
               schema:
