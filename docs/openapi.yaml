@@ -30,7 +30,7 @@ servers:
   - url: http://localhost:8082
     description: Local development
   - url: https://portal-cliente-api-qa.glik7.com
-    description: QA (Backoffice Glik)
+    description: QA
   - url: https://portal-cliente-api.glik.com.ve
     description: Production (placeholder)
 
@@ -71,17 +71,9 @@ paths:
       operationId: portalClienteSolicitarOTP
       description: |
         Busca `ref_clientes` por cédula, genera OTP 6 dígitos (`crypto/rand`),
-        persiste `HMAC-SHA256(pepper, code)` y envía SMS (stub en dev/QA).
+        persiste `HMAC-SHA256(pepper, code)` y envía SMS (stub en dev).
         Rate limit: 3/hora por teléfono, 10/hora por IP; cooldown 60s.
-
-        **Producción y ambientes normales:** el código OTP **no** se devuelve en la
-        respuesta (solo llega por SMS).
-
-        **Excepción QA (doble protección):** el campo opcional `otp_debug_solo_qa`
-        solo aparece si (1) `OTP_EXPONER_EN_RESPUESTA_QA=1` en el servidor **y**
-        (2) el proveedor SMS es el stub simulado (`LoggingSMSProvider`, sin envío real).
-        Si se conecta un proveedor SMS real, el código **nunca** se incluye en la
-        respuesta aunque la variable esté activa.
+        El código no se devuelve en la respuesta (solo llega por SMS).
       requestBody:
         required: true
         content:
@@ -199,29 +191,6 @@ paths:
                 error: ERR_MULTI_CONTRATO
                 code: 409
 
-  /v1/portal-cliente/cuentas-bancarias:
-    get:
-      tags: [portal-cliente]
-      summary: Cuentas bancarias activas del concesionario del contrato JWT
-      operationId: portalClienteCuentasBancarias
-      security:
-        - PortalClienteBearer: []
-      description: |
-        Resuelve `concesionario_id` desde el `contrato_id` del JWT (no acepta
-        query de concesionario). Devuelve solo cuentas `activa=true` para el
-        selector de Pago Móvil / Transferencia Bs en autogestión.
-      responses:
-        "200":
-          description: OK
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ApiResponseCuentasBancarias"
-        "401":
-          description: No autenticado
-        "403":
-          description: Contrato no autorizado
-
   /v1/portal-cliente/mi-cuenta:
     get:
       tags: [portal-cliente]
@@ -309,27 +278,75 @@ paths:
                 error: ERR_FORBIDDEN
                 code: 403
 
+  /v1/portal-cliente/notificaciones:
+    get:
+      tags: [portal-cliente]
+      summary: Inbox de campañas del contrato del JWT
+      operationId: portalClienteNotificaciones
+      security:
+        - PortalClienteBearer: []
+      description: |
+        Lista entregas **enviadas** de campañas de mensajería al `contrato_id`
+        del JWT (nunca del query/body). El HTML se sanitiza con la misma
+        lista blanca que el staff. **No incluye** recordatorios automáticos
+        de vencimiento (`mensajeria_auto_envios`).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message: { type: string }
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            entrega_id: { type: integer }
+                            campana_id: { type: integer }
+                            titulo: { type: string }
+                            cuerpo_sms: { type: string }
+                            cuerpo_rico: { type: string }
+                            canal: { type: string }
+                            estado: { type: string }
+                            enviado_at: { type: string, format: date-time }
+                  error: { type: string, nullable: true }
+                  code: { type: integer }
+              example:
+                message: Notificaciones
+                data:
+                  items: []
+                error: null
+                code: 200
+        "401":
+          description: ERR_UNAUTHORIZED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        "403":
+          description: ERR_FORBIDDEN
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+
   /v1/portal-cliente/pagos/reportar:
     post:
       tags: [portal-cliente]
-      summary: Reportar pago (auto-conciliación o en_proceso)
+      summary: Reportar pago (en_proceso)
       operationId: portalClienteReportarPago
       security:
         - PortalClienteBearer: []
       description: |
-        Registra un pago reportado por el cliente. La placa y cédula usadas para
-        matching salen **solo** del contrato asociado al JWT (el body no puede fijar
-        otra identidad).
-
-        Este endpoint intenta conciliación automática si el servicio de conciliación
-        está configurado (`WORKER_ODOO_BASE_URL` en el servidor); si no está
-        disponible o no logra conciliar, el pago queda en estado `en_proceso` para
-        revisión manual (comportamiento por defecto).
-
-        Cuando hay auto-match exitoso, el pago puede quedar `conciliado` de inmediato
-        (el worker ya ingirió el pago vía `POST /v1/pagos/ingesta`). En cualquier
-        otro caso se reutiliza `RegistrarPagoEnProceso` con `AutoReportadoCliente=true`.
-
+        Reutiliza `RegistrarPagoEnProceso` con `AutoReportadoCliente=true`.
+        El `contrato_id` sale **solo** del JWT (el body no puede fijar otro).
+        El pago queda `en_proceso` hasta confirmación/rechazo humano.
         Validación de sanidad de `fecha_pago`: no futura (tolerancia 5 min) ni
         anterior a la firma del contrato.
 
@@ -349,12 +366,9 @@ paths:
               moneda: USD
               referencia_externa: ZELLE-REF-48291
               fecha_pago: "2026-08-09T15:30:00Z"
-              remitente: Juan Perez
       responses:
         "201":
-          description: |
-            Pago reportado. `estado` puede ser `en_proceso` (revisión manual) o
-            `conciliado` si hubo auto-match exitoso.
+          description: Pago en_proceso creado
           content:
             application/json:
               schema:
@@ -474,7 +488,7 @@ components:
       properties:
         canal:
           type: string
-          enum: [pay_zelle, pay_binance, efectivo_concesionario, pago_movil, transferencia_bs, deposito_custodio]
+          enum: [pay_zelle, pay_binance, efectivo_concesionario, pago_movil, deposito_custodio]
           example: pay_zelle
         monto: { type: number, exclusiveMinimum: 0, example: 51 }
         moneda: { type: string, minLength: 3, maxLength: 3, example: USD }
@@ -483,51 +497,6 @@ components:
           type: string
           format: date-time
           example: "2026-08-09T15:30:00Z"
-        remitente:
-          type: string
-          maxLength: 255
-          example: Juan Perez
-          description: |
-            **Opcional.** Nombre o usuario del pagador (titular Zelle, usuario Binance,
-            etc.) usado solo para el matching automático cuando el servidor tiene
-            `WORKER_ODOO_BASE_URL` configurado. No es requerido para el flujo normal
-            `en_proceso`; si se omite o no hay auto-match, el comportamiento es el de
-            siempre (pago pendiente de revisión humana).
-        cuenta_bancaria_id:
-          type: integer
-          format: int64
-          example: 12
-          description: |
-            **Requerido** cuando `canal` es `pago_movil` o `transferencia_bs`.
-            Debe ser una cuenta activa del concesionario del contrato del JWT.
-            El backend guarda FK + snapshot (`banco_destino`, etc.) en `pagos`.
-
-    PortalCuentaBancaria:
-      type: object
-      required: [id, banco, numero_cuenta, telefono, rif, titular]
-      properties:
-        id: { type: integer, format: int64, example: 12 }
-        banco: { type: string, example: "BNC (0191)" }
-        numero_cuenta: { type: string, example: "019100011122" }
-        telefono: { type: string, example: "04129310142" }
-        rif: { type: string, example: "J-50498760-3" }
-        titular: { type: string, example: "MOBILITY DC, C.A." }
-
-    ApiResponseCuentasBancarias:
-      type: object
-      required: [message, data, error, code]
-      properties:
-        message: { type: string, example: Cuentas bancarias }
-        data:
-          type: array
-          items:
-            $ref: "#/components/schemas/PortalCuentaBancaria"
-        error:
-          oneOf:
-            - type: string
-            - type: "null"
-          example: null
-        code: { type: integer, example: 200 }
 
     SolicitarOTPData:
       type: object
@@ -536,14 +505,6 @@ components:
         destination_masked: { type: string, example: "****2233" }
         expires_in_seconds: { type: integer, example: 300 }
         channel: { type: string, example: sms }
-        otp_debug_solo_qa:
-          type: string
-          example: "580312"
-          description: >
-            **Solo QA, opcional.** Código OTP en plaintext cuando el servidor tiene
-            `OTP_EXPONER_EN_RESPUESTA_QA=1` **y** el proveedor SMS es el stub simulado
-            (sin envío real). Ausente en producción y si hay proveedor SMS real conectado,
-            aunque la variable de entorno esté activa por error.
 
     VerificarOTPData:
       type: object
@@ -609,12 +570,6 @@ components:
         cliente_id: { type: integer, format: int64, example: 1042 }
         contrato_id: { type: integer, format: int64, example: 2062 }
         mongo_contrato_id: { type: string, example: con_MIGTEST_S00989 }
-        codigo_contrato:
-          type: string
-          example: MMC_AX8D48G
-          description: |
-            Identificador de negocio legible. Preferirlo en UI frente a
-            `contrato_id` (id interno). Vacío en contratos antiguos sin código.
         cedula: { type: string, example: "111624956" }
         nombre: { type: string, example: Gabriel Quintero }
         estado_cobranza: { type: string, example: activo }
@@ -628,13 +583,6 @@ components:
         zona_gris: { type: boolean, example: false }
         cuotas_pagadas: { type: integer, example: 4 }
         cuotas_total: { type: integer, example: 52 }
-        saldo_a_favor_disponible:
-          type: number
-          example: 12.16
-          description: |
-            Suma de `saldos_a_favor.monto_disponible` con estado `disponible`.
-            Dinero ya cobrado que se aplicará automáticamente a la próxima
-            cuota que cierre. `0` si no hay saldo a favor.
         proxima_cuota:
           $ref: "#/components/schemas/MiCuentaProximaCuota"
 
@@ -662,9 +610,6 @@ components:
         cuota_protegida_id: { type: string, example: cuo_01JXYZABCDEFGHJKLMNPQRST }
         mensaje:
           type: string
-          description: |
-            Mensaje orientado al cliente. Ejemplos: confirmación `en_proceso` o
-            aviso de conciliación automática si hubo auto-match.
           example: pago en_proceso; protege cuota 5 hasta confirmación contable
 
     ApiResponseSolicitarOTP:
